@@ -663,10 +663,38 @@ class SentenceTransformer(nn.Sequential):
         :return:
             a batch of tensors for the model
         """
-        texts = [example.texts for example in batch]
-        sentence_features = [self.tokenize(sentence) for sentence in zip(*texts)]
-        labels = torch.tensor([example.label for example in batch])
-        return sentence_features, labels
+        try:
+            num_texts = len(batch[0].texts)
+            texts = [[] for _ in range(num_texts)]
+
+            rep_sent_t_1 = []
+            rep_sent_t_2 = []
+
+            for example in batch:
+                for idx, text in enumerate(example.texts):
+                    texts[idx].append(text)
+
+                rep_sent_t_1.append(example.label[0])
+                rep_sent_t_2.append(example.label[1])
+
+            rep_sent_en_t = torch.stack(rep_sent_t_1)
+            rep_sent_non_en_t = torch.stack(rep_sent_t_2)
+
+            sentence_features = []
+            for idx in range(num_texts):
+                tokenized = self.tokenize(texts[idx])
+                batch_to_device(tokenized, self.device)
+                sentence_features.append(tokenized)
+
+            sentence_en_features = sentence_features[0]
+            sentence_ne_features = sentence_features[1]
+
+            return sentence_en_features, sentence_ne_features, rep_sent_en_t, rep_sent_non_en_t
+        except:
+            texts = [example.texts for example in batch]
+            sentence_features = [self.tokenize(sentence) for sentence in zip(*texts)]
+            labels = torch.tensor([example.label for example in batch])
+            return sentence_features, labels
 
     def _text_length(self, text: Union[List[int], List[List[int]]]):
         """
@@ -842,13 +870,21 @@ class SentenceTransformer(nn.Sequential):
                         data_iterators[train_idx] = data_iterator
                         data = next(data_iterator)
 
-                    features, labels = data
-                    labels = labels.to(self.device)
-                    features = list(map(lambda batch: batch_to_device(batch, self.device), features))
+                    if len(data) > 2:
+                        sentence_en_features, sentence_ne_features, rep_sent_en_t, rep_sent_non_en_t = data
+                    else:
+                        features, labels = data
+                        labels = labels.to(self.device)
+                        features = list(map(lambda batch: batch_to_device(batch, self.device), features))
 
                     if use_amp:
                         with autocast():
-                            loss_value = loss_model(features, labels)
+                            if len(data) > 2:
+                                loss_value = loss_model(
+                                    sentence_en_features, sentence_ne_features, rep_sent_en_t, rep_sent_non_en_t
+                                )
+                            else:
+                                loss_value = loss_model(features, labels)
 
                         scale_before_step = scaler.get_scale()
                         scaler.scale(loss_value).backward()
