@@ -21,6 +21,9 @@ from .BatchHardSoftMarginTripletLoss import BatchHardSoftMarginTripletLoss
 from .BatchSemiHardTripletLoss import BatchSemiHardTripletLoss
 from .BatchAllTripletLoss import BatchAllTripletLoss
 
+from .SCTLoss import SCTLoss
+from .SCTLoss_distillation import SCTLoss_distillation
+
 __all__ = [
     "CosineSimilarityLoss",
     "SoftmaxLoss",
@@ -43,4 +46,6 @@ __all__ = [
     "BatchHardSoftMarginTripletLoss",
     "BatchSemiHardTripletLoss",
     "BatchAllTripletLoss",
+    "SCTLoss",
+    "SCTLoss_distillation",
 ]
