@@ -204,6 +204,8 @@ class SentenceTransformer(nn.Sequential):
             device = get_device_name()
             logger.info("Use pytorch device_name: {}".format(device))
 
+        self.early_stopping_patience_counter = 0
+        self.should_training_stop = False
         self.to(device)
 
     def encode(
@@ -632,9 +634,7 @@ class SentenceTransformer(nn.Sequential):
             exist_ok=exist_ok,
         )
         if local_model_path:
-            folder_url = api.upload_folder(
-                repo_id=repo_id, folder_path=local_model_path, commit_message=commit_message
-            )
+            folder_url = api.upload_folder(repo_id=repo_id, folder_path=local_model_path, commit_message=commit_message)
         else:
             with tempfile.TemporaryDirectory() as tmp_dir:
                 create_model_card = replace_model_card or not os.path.exists(os.path.join(tmp_dir, "README.md"))
@@ -705,6 +705,7 @@ class SentenceTransformer(nn.Sequential):
         checkpoint_path: str = None,
         checkpoint_save_steps: int = 500,
         checkpoint_save_total_limit: int = 0,
+        early_stopping_patience: int = 5,
     ):
         """
         Train the model with the given training objective
@@ -734,6 +735,7 @@ class SentenceTransformer(nn.Sequential):
         :param checkpoint_save_steps: Will save a checkpoint after so many steps
         :param checkpoint_save_total_limit: Total number of checkpoints to store
         """
+        self.early_stopping_patience = early_stopping_patience
 
         ##Add info to model card
         # info_loss_functions = "\n".join(["- {} with {} training examples".format(str(loss), len(dataloader)) for dataloader, loss in train_objectives])
@@ -781,6 +783,7 @@ class SentenceTransformer(nn.Sequential):
             loss_model.to(self.device)
 
         self.best_score = -9999999
+        self.epoch_best_score = -9999999
 
         if steps_per_epoch is None or steps_per_epoch == 0:
             steps_per_epoch = min([len(dataloader) for dataloader in dataloaders])
@@ -818,6 +821,8 @@ class SentenceTransformer(nn.Sequential):
         skip_scheduler = False
         for epoch in trange(epochs, desc="Epoch", disable=not show_progress_bar):
             training_steps = 0
+            if self.should_training_stop:
+                break
 
             for loss_model in loss_models:
                 loss_model.zero_grad()
@@ -868,9 +873,7 @@ class SentenceTransformer(nn.Sequential):
                 global_step += 1
 
                 if evaluation_steps > 0 and training_steps % evaluation_steps == 0:
-                    self._eval_during_training(
-                        evaluator, output_path, save_best_model, epoch, training_steps, callback
-                    )
+                    self._eval_during_training(evaluator, output_path, save_best_model, epoch, training_steps, callback)
 
                     for loss_model in loss_models:
                         loss_model.zero_grad()
@@ -884,7 +887,7 @@ class SentenceTransformer(nn.Sequential):
                 ):
                     self._save_checkpoint(checkpoint_path, checkpoint_save_total_limit, global_step)
 
-            self._eval_during_training(evaluator, output_path, save_best_model, epoch, -1, callback)
+            self._eval_during_training(evaluator, output_path, save_best_model, epoch, -1, callback, end_of_epoch=True)
 
         if evaluator is None and output_path is not None:  # No evaluator, but output path: save final model version
             self.save(output_path)
@@ -905,7 +908,9 @@ class SentenceTransformer(nn.Sequential):
             os.makedirs(output_path, exist_ok=True)
         return evaluator(self, output_path)
 
-    def _eval_during_training(self, evaluator, output_path, save_best_model, epoch, steps, callback):
+    def _eval_during_training(
+        self, evaluator, output_path, save_best_model, epoch, steps, callback, end_of_epoch=False
+    ):
         """Runs evaluation during the training"""
         eval_path = output_path
         if output_path is not None:
@@ -921,6 +926,18 @@ class SentenceTransformer(nn.Sequential):
                 self.best_score = score
                 if save_best_model:
                     self.save(output_path)
+
+            if end_of_epoch and score > self.epoch_best_score:
+                self.epoch_best_score = score
+                self.early_stopping_patience_counter = 0
+            if end_of_epoch and score < self.epoch_best_score:
+                self.early_stopping_patience_counter += 1
+
+            if end_of_epoch and self.early_stopping_patience_counter == self.early_stopping_patience:
+                print(
+                    f"Model training will be early stopped due to the validation metric did not improve for {self.early_stopping_patience} epochs"
+                )
+                self.should_training_stop = True
 
     def _save_checkpoint(self, checkpoint_path, checkpoint_save_total_limit, step):
         # Store new checkpoint
